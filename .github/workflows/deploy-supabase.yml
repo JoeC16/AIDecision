@@ -12,42 +12,27 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      # ── 1. Run migration via Management API ─────────────────────────────────
-      # Uses the access token directly — no database password needed.
-      - name: Run database migration
-        run: |
-          python3 << 'EOF'
-          import json, os, sys, urllib.request, urllib.error
-
-          sql = open("supabase/migrations/20260623000001_initial_schema.sql").read()
-          payload = json.dumps({"query": sql}).encode("utf-8")
-
-          req = urllib.request.Request(
-              f"https://api.supabase.com/v1/projects/{os.environ['PROJECT_REF']}/database/query",
-              data=payload,
-              headers={
-                  "Authorization": f"Bearer {os.environ['SUPABASE_ACCESS_TOKEN']}",
-                  "Content-Type": "application/json",
-              },
-              method="POST",
-          )
-
-          try:
-              with urllib.request.urlopen(req) as resp:
-                  print("Migration successful:", resp.read().decode())
-          except urllib.error.HTTPError as e:
-              body = e.read().decode()
-              print(f"Migration failed ({e.code}): {body}", file=sys.stderr)
-              sys.exit(1)
-          EOF
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-
-      # ── 2. Deploy edge function via CLI ─────────────────────────────────────
+      # ── 1. Install Supabase CLI ──────────────────────────────────────────────
       - uses: supabase/setup-cli@v1
         with:
           version: latest
 
+      # ── 2. Run migration via direct Postgres connection ──────────────────────
+      # api.supabase.com/database/query is blocked by Cloudflare from GitHub
+      # Actions IPs (error 1010). psql connects on port 5432 directly, bypassing
+      # Cloudflare entirely.
+      - name: Run database migration
+        run: |
+          PGPASSWORD="${SUPABASE_DB_PASSWORD}" psql \
+            -h "db.${PROJECT_REF}.supabase.co" \
+            -U postgres \
+            -d postgres \
+            -v ON_ERROR_STOP=1 \
+            -f supabase/migrations/20260623000001_initial_schema.sql
+        env:
+          SUPABASE_DB_PASSWORD: ${{ secrets.SUPABASE_DB_PASSWORD }}
+
+      # ── 3. Deploy edge function via CLI ─────────────────────────────────────
       - name: Deploy ingest edge function
         run: |
           supabase functions deploy ingest \
