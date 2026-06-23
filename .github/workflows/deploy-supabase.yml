@@ -3,26 +3,55 @@ name: Deploy to Supabase
 on:
   workflow_dispatch:
 
+env:
+  PROJECT_REF: tbwjwtctdvssilsxlbod
+
 jobs:
   deploy:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
+      # ── 1. Run migration via Management API ─────────────────────────────────
+      # Uses the access token directly — no database password needed.
+      - name: Run database migration
+        run: |
+          python3 << 'EOF'
+          import json, os, sys, urllib.request, urllib.error
+
+          sql = open("supabase/migrations/20260623000001_initial_schema.sql").read()
+          payload = json.dumps({"query": sql}).encode("utf-8")
+
+          req = urllib.request.Request(
+              f"https://api.supabase.com/v1/projects/{os.environ['PROJECT_REF']}/database/query",
+              data=payload,
+              headers={
+                  "Authorization": f"Bearer {os.environ['SUPABASE_ACCESS_TOKEN']}",
+                  "Content-Type": "application/json",
+              },
+              method="POST",
+          )
+
+          try:
+              with urllib.request.urlopen(req) as resp:
+                  print("Migration successful:", resp.read().decode())
+          except urllib.error.HTTPError as e:
+              body = e.read().decode()
+              print(f"Migration failed ({e.code}): {body}", file=sys.stderr)
+              sys.exit(1)
+          EOF
+        env:
+          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
+
+      # ── 2. Deploy edge function via CLI ─────────────────────────────────────
       - uses: supabase/setup-cli@v1
         with:
           version: latest
 
-      - name: Run database migration
-        run: |
-          supabase db push --project-ref tbwjwtctdvssilsxlbod
-        env:
-          SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
-
       - name: Deploy ingest edge function
         run: |
           supabase functions deploy ingest \
-            --project-ref tbwjwtctdvssilsxlbod \
+            --project-ref $PROJECT_REF \
             --no-verify-jwt
         env:
           SUPABASE_ACCESS_TOKEN: ${{ secrets.SUPABASE_ACCESS_TOKEN }}
